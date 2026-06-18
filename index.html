@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Chipping Challenge AR</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#0a0a0a;
+    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;
+    height:100dvh; overflow:hidden; color:white;
+    user-select:none; -webkit-user-select:none;
+  }
+  #app { position:relative; width:100vw; height:100dvh; }
+  #video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #canvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
+
+  /* ── Crosshair (hole locking phase) ── */
+  #crosshair {
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    width:72px; height:72px; pointer-events:none; z-index:9;
+  }
+  #crosshair::before,#crosshair::after {
+    content:''; position:absolute; background:rgba(255,255,255,0.9);
+  }
+  #crosshair::before { width:2px; height:100%; left:50%; transform:translateX(-50%); }
+  #crosshair::after  { height:2px; width:100%; top:50%; transform:translateY(-50%); }
+  .ch-ring { position:absolute; inset:10px; border:2.5px solid rgba(255,255,255,0.75); border-radius:50%; }
+  .ch-dot  { position:absolute; width:6px; height:6px; background:white; border-radius:50%; top:50%; left:50%; transform:translate(-50%,-50%); }
+
+  /* ── Floating ball cursor (measuring phase) ── */
+  #ball-cursor {
+    position:fixed; width:34px; height:34px; border-radius:50%;
+    background:radial-gradient(circle at 35% 32%, #ffffff 0%, #d4d4d4 60%, #b8b8b8 100%);
+    box-shadow:0 4px 16px rgba(0,0,0,0.6), inset 0 -2px 4px rgba(0,0,0,0.1);
+    pointer-events:none; z-index:20;
+    transform:translate(-50%,-50%);
+    display:none;
+    border:2px solid rgba(255,255,255,0.7);
+    transition:transform 0.05s;
+  }
+  #ball-cursor::after {
+    content:''; position:absolute; inset:7px;
+    border-radius:50%; border:1px solid rgba(150,150,150,0.3);
+  }
+
+  /* ── HUD top ── */
+  #hud-top {
+    position:absolute; top:0; left:0; right:0;
+    padding:52px 16px 12px;
+    display:flex; align-items:center; justify-content:space-between;
+    background:linear-gradient(to bottom,rgba(0,0,0,0.75) 0%,transparent 100%);
+    z-index:10; pointer-events:none;
+  }
+  .hud-pill {
+    background:rgba(0,0,0,0.6); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    border:1px solid rgba(255,255,255,0.14); border-radius:20px;
+    padding:7px 14px; font-size:13px; font-weight:600;
+  }
+  .hud-pill.green { background:rgba(34,197,94,0.28); border-color:rgba(34,197,94,0.55); color:#4ade80; }
+
+  /* ── Instruction toast ── */
+  #instruction {
+    position:absolute; bottom:190px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,0.7); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    border:1px solid rgba(255,255,255,0.15); border-radius:22px;
+    padding:11px 20px; font-size:14px; font-weight:600; text-align:center;
+    z-index:10; pointer-events:none; transition:opacity 0.4s; white-space:nowrap;
+  }
+
+  /* ── Bottom panel ── */
+  #panel-bottom {
+    position:absolute; bottom:0; left:0; right:0;
+    padding:12px 16px 44px;
+    background:linear-gradient(to top,rgba(0,0,0,0.92) 60%,transparent 100%);
+    z-index:10;
+  }
+  #ball-list { display:flex; flex-direction:column; gap:7px; margin-bottom:12px; max-height:180px; overflow-y:auto; }
+  .ball-row {
+    display:flex; align-items:center; gap:10px;
+    background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.1);
+    border-radius:14px; padding:9px 14px;
+    animation:slideUp 0.25s ease;
+  }
+  @keyframes slideUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .ball-num { width:26px; height:26px; background:white; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; color:#166534; flex-shrink:0; }
+  .ball-label { font-size:13px; color:#9ca3af; flex:1; }
+  .ball-dist  { font-size:16px; font-weight:700; }
+  .ball-sg { font-size:12px; font-weight:600; padding:3px 9px; border-radius:8px; }
+  .ball-sg.pos { background:rgba(34,197,94,0.2); color:#4ade80; }
+  .ball-sg.neg { background:rgba(239,68,68,0.2); color:#f87171; }
+  .ball-sg.neu { background:rgba(156,163,175,0.2); color:#9ca3af; }
+
+  .btn-row { display:flex; gap:10px; }
+  .btn-action {
+    flex:1; border:none; border-radius:16px; padding:16px;
+    font-size:15px; font-weight:700; cursor:pointer;
+    -webkit-tap-highlight-color:transparent; transition:transform 0.1s,opacity 0.1s;
+  }
+  .btn-action:active { transform:scale(0.95); }
+  .btn-action:disabled { opacity:0.28; }
+  .btn-lock { background:linear-gradient(135deg,#22c55e,#16a34a); color:white; font-size:16px; }
+  .btn-mark {
+    background:rgba(255,255,255,0.14);
+    border:1px solid rgba(255,255,255,0.22)!important; color:white;
+  }
+  .btn-mark.ready {
+    background:linear-gradient(135deg,#3b82f6,#2563eb);
+    border-color:transparent!important;
+    box-shadow:0 4px 18px rgba(59,130,246,0.4);
+  }
+  .btn-reset { flex:0 0 auto; padding:16px 18px; background:rgba(239,68,68,0.14); border:1px solid rgba(239,68,68,0.28)!important; color:#f87171; display:none; font-size:18px; }
+
+  #notice { font-size:11px; color:rgba(255,255,255,0.22); text-align:center; margin-top:9px; }
+
+  /* ── Flash overlay ── */
+  #lock-flash { position:absolute; inset:0; background:rgba(34,197,94,0.2); pointer-events:none; opacity:0; z-index:8; transition:opacity 0.07s; }
+  #mark-flash { position:absolute; inset:0; background:rgba(59,130,246,0.18); pointer-events:none; opacity:0; z-index:8; transition:opacity 0.07s; }
+
+  /* ── Start screen ── */
+  #start-screen {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    background:linear-gradient(160deg,#0d1f12 0%,#0a0a0a 100%);
+    z-index:100; gap:12px; padding:32px;
+  }
+  .logo { width:76px; height:76px; background:linear-gradient(135deg,#22c55e,#16a34a); border-radius:22px; display:flex; align-items:center; justify-content:center; font-size:38px; margin-bottom:8px; box-shadow:0 8px 32px rgba(34,197,94,0.4); }
+  #start-screen h1 { font-size:28px; font-weight:800; letter-spacing:-0.5px; }
+  #start-screen p  { font-size:15px; color:#6b7280; text-align:center; line-height:1.65; max-width:290px; }
+  .btn-primary { margin-top:18px; background:linear-gradient(135deg,#22c55e,#16a34a); color:white; border:none; border-radius:18px; padding:17px 48px; font-size:17px; font-weight:700; cursor:pointer; box-shadow:0 4px 22px rgba(34,197,94,0.45); -webkit-tap-highlight-color:transparent; transition:transform 0.1s; }
+  .btn-primary:active { transform:scale(0.97); }
+
+  /* ── Summary ── */
+  #summary { position:absolute; inset:0; background:linear-gradient(160deg,#0d1f12 0%,#0a0a0a 100%); z-index:100; display:none; flex-direction:column; padding:56px 20px 40px; overflow-y:auto; gap:12px; }
+  #summary h2 { font-size:26px; font-weight:800; letter-spacing:-0.5px; }
+  #summary .subtitle { font-size:14px; color:#6b7280; margin-top:-6px; }
+  .s-card { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); border-radius:20px; padding:18px; }
+  .s-card h3 { font-size:11px; color:#6b7280; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; margin-bottom:8px; }
+  .sg-total { font-size:56px; font-weight:800; letter-spacing:-2px; line-height:1; }
+  .sg-total.pos{color:#4ade80;} .sg-total.neg{color:#f87171;} .sg-total.neu{color:#9ca3af;}
+  .s-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.06); }
+  .s-row:last-child{border-bottom:none;}
+  .s-row .lbl{font-size:14px;color:#9ca3af;} .s-row .val{font-size:15px;font-weight:600;}
+</style>
+</head>
+<body>
+<div id="app">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="lock-flash"></div>
+  <div id="mark-flash"></div>
+
+  <!-- Hole crosshair -->
+  <div id="crosshair">
+    <div class="ch-ring"></div>
+    <div class="ch-dot"></div>
+  </div>
+
+  <!-- Moving ball cursor -->
+  <div id="ball-cursor"></div>
+
+  <!-- HUD -->
+  <div id="hud-top">
+    <div class="hud-pill" id="hud-mode">📍 Aim at hole</div>
+    <div class="hud-pill" id="hud-count">0 / 9 balls</div>
+  </div>
+
+  <div id="instruction">Aim crosshair at the hole then tap Lock</div>
+
+  <div id="panel-bottom">
+    <div id="ball-list"></div>
+    <div class="btn-row">
+      <button class="btn-action btn-lock" id="btn-lock">⛳ Lock Hole</button>
+      <button class="btn-action btn-mark" id="btn-mark" disabled>Mark Ball</button>
+      <button class="btn-action btn-reset" id="btn-reset">↺</button>
+    </div>
+    <div id="notice">POC · simulated distance · LiDAR in v2</div>
+  </div>
+
+  <!-- Start -->
+  <div id="start-screen">
+    <div class="logo">⛳</div>
+    <h1>Chipping Challenge</h1>
+    <p>Lock the hole, then move your phone to each ball — a live line shows the distance. Tap Mark Ball to log it.</p>
+    <button class="btn-primary" id="btn-start">Start Measuring</button>
+  </div>
+
+  <!-- Summary -->
+  <div id="summary">
+    <h2>Round Summary</h2>
+    <p class="subtitle" id="sum-date"></p>
+    <div class="s-card">
+      <h3>Total Strokes Gained</h3>
+      <div class="sg-total" id="sg-total">+0.0</div>
+    </div>
+    <div class="s-card" id="sum-balls"></div>
+    <button class="btn-primary" id="btn-new" style="width:100%">New Round</button>
+  </div>
+</div>
+
+<script>
+// ── State ──
+const S = {
+  phase: 'locking',   // locking | measuring
+  hole: null,         // {x,y} locked hole position on canvas
+  balls: [],          // [{x,y,dist,sg}]
+  cx: 0, cy: 0,       // current cursor position
+  scaleFactor: 0.06,  // yards per pixel — swapped for LiDAR in v2
+};
+
+// ── SG table ──
+const SG_TABLE = [
+  {mf:1,e:1.00},{mf:2,e:1.03},{mf:3,e:1.08},{mf:4,e:1.15},{mf:6,e:1.22},
+  {mf:9,e:1.35},{mf:12,e:1.45},{mf:18,e:1.58},{mf:24,e:1.68},
+  {mf:36,e:1.80},{mf:60,e:1.90},{mf:Infinity,e:1.95},
+];
+function expPutts(ft){ for(const r of SG_TABLE) if(ft<=r.mf) return r.e; return 1.95; }
+function calcSG(yds){ return +(2.40-(1+expPutts(yds*3))).toFixed(2); }
+function dist(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
+
+// ── Elements ──
+const video      = document.getElementById('video');
+const canvas     = document.getElementById('canvas');
+const ctx        = canvas.getContext('2d');
+const crosshair  = document.getElementById('crosshair');
+const ballCursor = document.getElementById('ball-cursor');
+const btnStart   = document.getElementById('btn-start');
+const btnLock    = document.getElementById('btn-lock');
+const btnMark    = document.getElementById('btn-mark');
+const btnReset   = document.getElementById('btn-reset');
+const btnNew     = document.getElementById('btn-new');
+const instruction= document.getElementById('instruction');
+const hudMode    = document.getElementById('hud-mode');
+const hudCount   = document.getElementById('hud-count');
+const ballList   = document.getElementById('ball-list');
+const lockFlash  = document.getElementById('lock-flash');
+const markFlash  = document.getElementById('mark-flash');
+const startScreen= document.getElementById('start-screen');
+const summary    = document.getElementById('summary');
+
+// ── Camera ──
+async function startCamera(){
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
+      audio:false
+    });
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      resizeCanvas();
+      startScreen.style.display = 'none';
+      updateUI(); draw();
+    };
+  } catch(e) {
+    startScreen.style.display = 'none';
+    canvas.style.background = 'linear-gradient(160deg,#1a3a1a,#0d1a0d)';
+    document.getElementById('notice').textContent = '⚠️ No camera — demo mode';
+    resizeCanvas(); updateUI(); draw();
+  }
+}
+
+function resizeCanvas(){
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  S.cx = canvas.width/2;
+  S.cy = canvas.height/2;
+}
+window.addEventListener('resize', resizeCanvas);
+
+// ── Pointer tracking ──
+function moveTo(clientX, clientY){
+  S.cx = clientX;
+  S.cy = clientY;
+  if(S.phase === 'measuring'){
+    ballCursor.style.left = clientX + 'px';
+    ballCursor.style.top  = clientY + 'px';
+  }
+}
+document.addEventListener('touchmove',  e => { if(S.phase==='measuring'){ e.preventDefault(); moveTo(e.touches[0].clientX, e.touches[0].clientY); } }, {passive:false});
+document.addEventListener('touchstart', e => { if(S.phase==='measuring') moveTo(e.touches[0].clientX, e.touches[0].clientY); }, {passive:true});
+document.addEventListener('mousemove',  e => moveTo(e.clientX, e.clientY));
+
+// ── Draw ──
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if(S.hole) drawHole(S.hole.x, S.hole.y);
+
+  // Locked balls with their distance lines
+  S.balls.forEach((b,i) => {
+    drawLine(S.hole, b, i, false);
+    drawBall(b.x, b.y, i+1);
+  });
+
+  // Live measuring line from hole to cursor
+  if(S.phase === 'measuring' && S.hole){
+    const px  = dist(S.hole, {x:S.cx, y:S.cy});
+    const yds = px * S.scaleFactor;
+    const ft  = yds * 3;
+    drawLiveLine(S.hole.x, S.hole.y, S.cx, S.cy, ft, yds);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+function drawHole(x, y){
+  // Pulse ring
+  ctx.beginPath();
+  ctx.arc(x,y,26,0,Math.PI*2);
+  ctx.strokeStyle='rgba(34,197,94,0.35)';
+  ctx.lineWidth=2; ctx.stroke();
+
+  // Green circle
+  ctx.beginPath();
+  ctx.arc(x,y,17,0,Math.PI*2);
+  ctx.fillStyle='rgba(34,197,94,0.92)'; ctx.fill();
+
+  ctx.font='13px -apple-system';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('⛳',x,y);
+
+  ctx.fillStyle='rgba(255,255,255,0.85)';
+  ctx.font='bold 10px -apple-system';
+  ctx.fillText('HOLE',x,y+32);
+}
+
+function drawBall(x, y, num){
+  // Shadow
+  ctx.beginPath(); ctx.arc(x,y+2,15,0,Math.PI*2);
+  ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.fill();
+  // Ball
+  const g = ctx.createRadialGradient(x-4,y-5,1,x,y,15);
+  g.addColorStop(0,'#ffffff'); g.addColorStop(1,'#c8c8c8');
+  ctx.beginPath(); ctx.arc(x,y,15,0,Math.PI*2);
+  ctx.fillStyle=g; ctx.fill();
+  // Number
+  ctx.fillStyle='#166534'; ctx.font='bold 12px -apple-system';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(num,x,y);
+}
+
+const LINE_COLORS = ['#4ade80','#60a5fa','#f472b6','#fb923c','#a78bfa','#34d399','#fbbf24','#f87171','#818cf8'];
+
+function drawLine(hole, ball, idx){
+  const color = LINE_COLORS[idx % LINE_COLORS.length];
+  ctx.beginPath();
+  ctx.moveTo(hole.x,hole.y); ctx.lineTo(ball.x,ball.y);
+  ctx.strokeStyle=color; ctx.lineWidth=2;
+  ctx.setLineDash([6,4]); ctx.globalAlpha=0.8;
+  ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
+
+  // Distance pill on line
+  const mx=(hole.x+ball.x)/2, my=(hole.y+ball.y)/2;
+  const ft=ball.dist*3;
+  const label = ft<12 ? `${ft.toFixed(1)} ft` : `${ball.dist.toFixed(1)} yds`;
+  drawPill(mx,my,label,color);
+}
+
+function drawLiveLine(hx,hy,cx,cy,ft,yds){
+  // Animated dashed line
+  ctx.beginPath();
+  ctx.moveTo(hx,hy); ctx.lineTo(cx,cy);
+  ctx.strokeStyle='rgba(255,255,255,0.7)';
+  ctx.lineWidth=2.5;
+  ctx.setLineDash([8,5]); ctx.stroke(); ctx.setLineDash([]);
+
+  // End dot at cursor
+  ctx.beginPath(); ctx.arc(cx,cy,5,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fill();
+
+  // Big live distance pill — centred on line
+  const mx=(hx+cx)/2, my=(hy+cy)/2;
+  const label = ft<12 ? `${ft.toFixed(1)} ft` : `${yds.toFixed(1)} yds`;
+  drawLivePill(mx,my,label);
+}
+
+function drawPill(x,y,label,color){
+  ctx.font='bold 12px -apple-system';
+  const tw=ctx.measureText(label).width;
+  ctx.fillStyle='rgba(0,0,0,0.72)';
+  ctx.beginPath(); ctx.roundRect(x-tw/2-8,y-13,tw+16,26,8); ctx.fill();
+  ctx.fillStyle=color; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label,x,y);
+}
+
+function drawLivePill(x,y,label){
+  ctx.font='bold 18px -apple-system';
+  const tw=ctx.measureText(label).width;
+  // Large pill
+  ctx.fillStyle='rgba(0,0,0,0.78)';
+  ctx.beginPath(); ctx.roundRect(x-tw/2-16,y-22,tw+32,44,14); ctx.fill();
+  // White border
+  ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.roundRect(x-tw/2-16,y-22,tw+32,44,14); ctx.stroke();
+  ctx.fillStyle='white'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label,x,y);
+}
+
+// ── Flash helpers ──
+function flash(el){ el.style.opacity='1'; setTimeout(()=>el.style.opacity='0',150); }
+
+// ── UI ──
+function updateUI(){
+  hudCount.textContent = `${S.balls.length} / 9 balls`;
+
+  if(S.phase==='locking'){
+    instruction.textContent = 'Aim crosshair at the hole, tap Lock Hole';
+    instruction.style.opacity='1';
+    hudMode.textContent='📍 Aim at hole'; hudMode.className='hud-pill';
+    crosshair.style.display='block';
+    ballCursor.style.display='none';
+    btnLock.style.display=''; btnLock.disabled=false;
+    btnMark.style.display='none';
+    btnReset.style.display='none';
+  } else {
+    instruction.textContent='Move phone to ball → tap Mark Ball';
+    instruction.style.opacity= S.balls.length===0 ? '1' : '0';
+    hudMode.textContent='✅ Hole locked'; hudMode.className='hud-pill green';
+    crosshair.style.display='none';
+    ballCursor.style.display='block';
+    ballCursor.style.left=(canvas.width/2)+'px';
+    ballCursor.style.top=(canvas.height/2)+'px';
+    btnLock.style.display='none';
+    btnMark.style.display='';
+    btnMark.disabled = S.balls.length>=9;
+    btnMark.className = 'btn-action btn-mark' + (S.balls.length<9?' ready':'');
+    btnReset.style.display='block';
+  }
+
+  // Rebuild list
+  ballList.innerHTML='';
+  S.balls.forEach((b,i)=>{
+    const ft=b.dist*3;
+    const dl=ft<12?`${ft.toFixed(1)} ft`:`${b.dist.toFixed(1)} yds`;
+    const sc=b.sg>0?'pos':b.sg<0?'neg':'neu';
+    const row=document.createElement('div'); row.className='ball-row';
+    row.innerHTML=`
+      <div class="ball-num">${i+1}</div>
+      <div class="ball-label">Ball ${i+1}</div>
+      <div class="ball-dist">${dl}</div>
+      <div class="ball-sg ${sc}">${b.sg>=0?'+':''}${b.sg} SG</div>`;
+    ballList.appendChild(row);
+  });
+  // Auto scroll to bottom
+  ballList.scrollTop=ballList.scrollHeight;
+
+  if(S.balls.length===9) setTimeout(showSummary,800);
+}
+
+// ── Button handlers ──
+btnStart.addEventListener('click', startCamera);
+
+btnLock.addEventListener('click',()=>{
+  S.hole = { x:canvas.width/2, y:canvas.height/2 };
+  S.cx=canvas.width/2; S.cy=canvas.height/2;
+  S.phase='measuring';
+  flash(lockFlash);
+  ballCursor.style.left=(canvas.width/2)+'px';
+  ballCursor.style.top=(canvas.height/2)+'px';
+  updateUI();
+});
+
+btnMark.addEventListener('click',()=>{
+  if(!S.hole||S.balls.length>=9) return;
+  const px=dist(S.hole,{x:S.cx,y:S.cy});
+  const yds=px*S.scaleFactor;
+  const sg=calcSG(yds);
+  S.balls.push({x:S.cx,y:S.cy,dist:yds,sg});
+  flash(markFlash);
+  updateUI();
+});
+
+btnReset.addEventListener('click',()=>{
+  S.phase='locking'; S.hole=null; S.balls=[];
+  updateUI();
+});
+
+btnNew.addEventListener('click',()=>{
+  summary.style.display='none';
+  S.phase='locking'; S.hole=null; S.balls=[];
+  updateUI();
+});
+
+// ── Summary ──
+function showSummary(){
+  const totalSG = S.balls.reduce((a,b)=>a+b.sg,0);
+  const avgFt   = S.balls.reduce((a,b)=>a+b.dist*3,0)/S.balls.length;
+  const best    = S.balls.reduce((a,b)=>a.dist<b.dist?a:b);
+
+  document.getElementById('sum-date').textContent =
+    `9 balls · ${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}`;
+
+  const sgEl=document.getElementById('sg-total');
+  sgEl.textContent = (totalSG>=0?'+':'')+totalSG.toFixed(2);
+  sgEl.className   = 'sg-total '+(totalSG>0?'pos':totalSG<0?'neg':'neu');
+
+  const sb=document.getElementById('sum-balls');
+  sb.innerHTML='<h3>Ball Breakdown</h3>';
+  S.balls.forEach((b,i)=>{
+    const ft=b.dist*3;
+    const label=ft<12?`${ft.toFixed(1)} ft`:`${b.dist.toFixed(1)} yds`;
+    const sc=b.sg>0?'pos':b.sg<0?'neg':'neu';
+    sb.innerHTML+=`<div class="s-row"><span class="lbl">Ball ${i+1}</span><span class="val">${label}</span><span class="ball-sg ${sc}">${b.sg>=0?'+':''}${b.sg} SG</span></div>`;
+  });
+  sb.innerHTML+=`
+    <div class="s-row"><span class="lbl">Avg distance</span><span class="val">${avgFt.toFixed(1)} ft</span></div>
+    <div class="s-row"><span class="lbl">Best ball</span><span class="val">${(best.dist*3).toFixed(1)} ft</span></div>`;
+
+  summary.style.display='flex';
+}
+
+// ── Init ──
+resizeCanvas(); draw(); updateUI();
+</script>
+</body>
+</html>
